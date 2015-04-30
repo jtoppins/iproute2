@@ -135,6 +135,10 @@ static void print_explain(FILE *f)
 		"                [ packets_per_slave PACKETS_PER_SLAVE ]\n"
 		"                [ lacp_rate LACP_RATE ]\n"
 		"                [ ad_select AD_SELECT ]\n"
+		"                [ ad_info \n"
+		"                   [ ad_user_port_key PORTKEY ]\n"
+		"                   [ ad_actor_sys_prio SYSPRIO ]\n"
+		"                   [ ad_actor_system LLADDR ]]\n"
 		"\n"
 		"BONDMODE := balance-rr|active-backup|balance-xor|broadcast|802.3ad|balance-tlb|balance-alb\n"
 		"ARP_VALIDATE := none|active|backup|all\n"
@@ -152,6 +156,64 @@ static void explain(void)
 	print_explain(stderr);
 }
 
+static int bond_parse_ad_info(struct nlmsghdr *n, int argc, char **argv)
+{
+	char abuf[32];
+	__u16 ad_user_port_key, ad_actor_sys_prio;
+	int len;
+	int original_argcnt = argc;
+	struct rtattr *nest = addattr_nest(n, 1024, IFLA_BOND_AD_INFO);
+
+	if (!nest)
+		goto err;
+
+	NEXT_ARG();
+	while (argc > 0) {
+		if (matches(*argv, "ad_user_port_key") == 0) {
+			NEXT_ARG();
+			if (get_u16(&ad_user_port_key, *argv, 0)) {
+				invarg("invalid ad_user_port_key", *argv);
+				goto err;
+			}
+			if (addattr16(n, 1024, IFLA_BOND_AD_INFO_USER_PORT_KEY,
+				      ad_user_port_key))
+				goto err;
+		} else if (matches(*argv, "ad_actor_sys_prio") == 0) {
+			NEXT_ARG();
+			if (get_u16(&ad_actor_sys_prio, *argv, 0)) {
+				invarg("invalid ad_actor_sys_prio", *argv);
+				goto err;
+			}
+			if (addattr16(n, 1024, IFLA_BOND_AD_INFO_ACTOR_SYS_PRIO,
+				      ad_actor_sys_prio))
+				goto err;
+		} else if (matches(*argv, "ad_actor_system") == 0) {
+			NEXT_ARG();
+			len = ll_addr_a2n(abuf, sizeof(abuf), *argv);
+			if (len < 0) {
+				invarg("invalid ad_actor_system", *argv);
+				goto err;
+			}
+			if (addattr_l(n, 1024, IFLA_BOND_AD_INFO_ACTOR_SYSTEM,
+				      abuf, len))
+				goto err;
+		} else {
+			/* invalid must provide one of the following */
+			invarg("must be one of ad_user_port_key, "
+				"ad_actor_sys_prio, or ad_actor_system", *argv);
+			goto err;
+		}
+		argc--;
+		argv++;
+	}
+	addattr_nest_end(n, nest);
+	return original_argcnt - argc + 1;
+err:
+	return -1;
+
+
+}
+
 static int bond_parse_opt(struct link_util *lu, int argc, char **argv,
 			  struct nlmsghdr *n)
 {
@@ -162,6 +224,7 @@ static int bond_parse_opt(struct link_util *lu, int argc, char **argv,
 	__u32 arp_all_targets, resend_igmp, min_links, lp_interval;
 	__u32 packets_per_slave;
 	unsigned ifindex;
+	int i;
 
 	while (argc > 0) {
 		if (matches(*argv, "mode") == 0) {
@@ -344,6 +407,14 @@ static int bond_parse_opt(struct link_util *lu, int argc, char **argv,
 			}
 			ad_select = get_index(ad_select_tbl, *argv);
 			addattr8(n, 1024, IFLA_BOND_AD_SELECT, ad_select);
+		} else if (matches(*argv, "ad_info") == 0) {
+			i = bond_parse_ad_info(n, argc, argv);
+			if (i < 0) {
+				explain();
+				return -1;
+			}
+			argc -= i;
+			argv += i;
 		} else if (matches(*argv, "help") == 0) {
 			explain();
 			return -1;
@@ -533,6 +604,26 @@ static void bond_print_opt(struct link_util *lu, FILE *f, struct rtattr *tb[])
 			fprintf(f, "ad_partner_mac %s ",
 				ll_addr_n2a(p, ETH_ALEN, 0, b, sizeof(b)));
 		}
+
+		if (adtb[IFLA_BOND_AD_INFO_ACTOR_SYS_PRIO]) {
+			fprintf(f, "ad_actor_sys_prio %u ", rta_getattr_u16(
+				    adtb[IFLA_BOND_AD_INFO_ACTOR_SYS_PRIO]));
+		}
+
+		if (adtb[IFLA_BOND_AD_INFO_USER_PORT_KEY]) {
+			fprintf(f, "ad_user_port_key %u ", rta_getattr_u16(
+				    adtb[IFLA_BOND_AD_INFO_USER_PORT_KEY]));
+		}
+
+		if (adtb[IFLA_BOND_AD_INFO_ACTOR_SYSTEM]) {
+			/* We assume the l2 address is an Ethernet MAC address */
+			SPRINT_BUF(b1);
+			ll_addr_n2a(RTA_DATA(adtb[IFLA_BOND_AD_INFO_ACTOR_SYSTEM]),
+				    RTA_PAYLOAD(adtb[IFLA_BOND_AD_INFO_ACTOR_SYSTEM]),
+				    1 /*ARPHDR_ETHER*/, b1, sizeof(b1));
+			fprintf(f, "ad_actor_system %s ", b1);
+		}
+
 	}
 }
 
